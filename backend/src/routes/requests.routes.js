@@ -3,10 +3,25 @@ const { requirePermission } = require("../middleware/requirePermission");
 const {
   createStockRequest,
   approveStockRequest,
-  releaseToSeller
+  releaseToSeller,
+  listRequests
 } = require("../controllers/requestsController");
 
 async function requestsRoutes(app) {
+
+    // ✅ NEW: unified list endpoint
+  // seller -> sees own
+  // store_keeper/admin/manager -> sees all (controller decides based on role)
+  app.get(
+    "/requests",
+    {
+      preHandler: [
+        // anyone who can participate in requests can view them
+        requirePermission(ACTIONS.STOCK_REQUEST_VIEW)
+      ]
+    },
+    listRequests
+  );
   // Seller creates request (limit)
   app.post(
     "/requests",

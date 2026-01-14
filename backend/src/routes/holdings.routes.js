@@ -4,7 +4,7 @@ const { myHoldings, sellerHoldings } = require("../controllers/holdingsControlle
 
 async function holdingsRoutes(app) {
   // Seller views own holding (no special permission needed beyond being logged in)
-  app.get("/holdings/me", myHoldings);
+  app.get("/holdings", myHoldings);
 
   // Admin/Manager/StoreKeeper can view a seller's holdings
   app.get(

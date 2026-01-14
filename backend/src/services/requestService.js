@@ -4,7 +4,83 @@ const { stockRequestItems } = require("../db/schema/stock_request_items.schema")
 const { inventoryBalances } = require("../db/schema/inventory.schema");
 const { sellerHoldings } = require("../db/schema/seller_holdings.schema");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
-const { eq, and } = require("drizzle-orm");
+const { eq, and, desc, inArray, sql } = require("drizzle-orm");
+
+
+async function listRequests({
+  locationId,
+  sellerId,
+  status,
+  page = 1,
+  limit = 20
+}) {
+  const offset = (page - 1) * limit;
+
+  const conditions = [
+    eq(stockRequests.locationId, locationId)
+  ];
+
+  if (sellerId) {
+    conditions.push(eq(stockRequests.sellerId, sellerId));
+  }
+
+  if (status) {
+    conditions.push(eq(stockRequests.status, status));
+  }
+
+  const whereClause = and(...conditions);
+
+  // 1️⃣ requests
+  const requests = await db
+    .select()
+    .from(stockRequests)
+    .where(whereClause)
+    .orderBy(desc(stockRequests.createdAt))
+    .limit(limit)
+    .offset(offset);
+
+  // 2️⃣ items
+  const requestIds = requests.map(r => r.id);
+
+  let items = [];
+  if (requestIds.length > 0) {
+    items = await db
+      .select()
+      .from(stockRequestItems)
+      .where(inArray(stockRequestItems.requestId, requestIds));
+  }
+
+  const itemsByRequest = new Map();
+  for (const item of items) {
+    if (!itemsByRequest.has(item.requestId)) {
+      itemsByRequest.set(item.requestId, []);
+    }
+    itemsByRequest.get(item.requestId).push(item);
+  }
+
+  const data = requests.map(r => ({
+    ...r,
+    items: itemsByRequest.get(r.id) || []
+  }));
+
+  // 3️⃣ count (FIXED)
+  const [{ count }] = await db
+    .select({ count: sql`count(*)` })
+    .from(stockRequests)
+    .where(whereClause);
+
+  return {
+    data,
+    meta: {
+      page,
+      limit,
+      total: Number(count),
+      pages: Math.ceil(Number(count) / limit)
+    }
+  };
+}
+
+
 
 async function createRequest({ locationId, sellerId, note, items }) {
   return db.transaction(async (tx) => {
@@ -175,4 +251,4 @@ async function releaseToSeller({ locationId, requestId, storeKeeperId }) {
   });
 }
 
-module.exports = { createRequest, approveOrReject, releaseToSeller };
+module.exports = { createRequest, approveOrReject, releaseToSeller, listRequests };
