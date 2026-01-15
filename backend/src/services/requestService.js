@@ -1,5 +1,6 @@
 const { db } = require("../config/db");
 const { stockRequests } = require("../db/schema/stock_requests.schema");
+const { products } = require("../db/schema/products.schema");
 const { stockRequestItems } = require("../db/schema/stock_request_items.schema");
 const { inventoryBalances } = require("../db/schema/inventory.schema");
 const { sellerHoldings } = require("../db/schema/seller_holdings.schema");
@@ -45,9 +46,22 @@ async function listRequests({
   let items = [];
   if (requestIds.length > 0) {
     items = await db
-      .select()
-      .from(stockRequestItems)
-      .where(inArray(stockRequestItems.requestId, requestIds));
+  .select({
+    id: stockRequestItems.id,
+    requestId: stockRequestItems.requestId,
+    productId: stockRequestItems.productId,
+    qtyRequested: stockRequestItems.qtyRequested,
+    qtyApproved: stockRequestItems.qtyApproved,
+    productName: products.name,
+    sku: products.sku
+  })
+  .from(stockRequestItems)
+  .leftJoin(
+    products,
+    eq(products.id, stockRequestItems.productId)
+  )
+  .where(inArray(stockRequestItems.requestId, requestIds));
+
   }
 
   const itemsByRequest = new Map();

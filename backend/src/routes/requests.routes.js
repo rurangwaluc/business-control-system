@@ -34,13 +34,13 @@ async function requestsRoutes(app) {
 
   // Store keeper approves/rejects (limit)
   app.post(
-    "/requests/:id/decision",
+    "/requests/:id/approve",
     {
       preHandler: [requirePermission(ACTIONS.STOCK_REQUEST_APPROVE)],
       config: { rateLimit: { max: 30, timeWindow: "1 minute" } }
     },
     approveStockRequest
-  );
+  ); 
 
   // Store keeper releases stock (limit)
   app.post(
