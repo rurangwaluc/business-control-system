@@ -6,6 +6,10 @@ const sales = pgTable("sales", {
 
   sellerId: integer("seller_id").notNull(),
   customerId: integer("customer_id"), // optional for now
+  
+  customerName: varchar("customer_name", { length: 255 }),
+  customerPhone: varchar("customer_phone", { length: 40 }),
+
 
   status: varchar("status", { length: 40 }).notNull().default("DRAFT"),
   totalAmount: integer("total_amount").notNull().default(0),

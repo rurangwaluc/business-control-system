@@ -1,21 +1,37 @@
 const { createSaleSchema, markSaleSchema, cancelSaleSchema } = require("../validators/sales.schema");
 const salesService = require("../services/salesService");
+const { db, sql } = require("../config/db");
 
 async function createSale(request, reply) {
+  console.log("RAW BODY:", request.body);
+
   const parsed = createSaleSchema.safeParse(request.body);
+  console.log("PARSED DATA:", parsed.data);
+
   if (!parsed.success) {
-    return reply.status(400).send({ error: "Invalid payload", details: parsed.error.flatten() });
+    return reply.status(400).send({
+      error: "Invalid payload",
+      details: parsed.error.flatten()
+    });
   }
 
-  try {
-    const sale = await salesService.createSale({
-      locationId: request.user.locationId,
-      sellerId: request.user.id,
-      customerId: parsed.data.customerId,
-      note: parsed.data.note,
-      items: parsed.data.items
-    });
+  const saleData = {
+    locationId: request.user.locationId,
+    sellerId: request.user.id,
+    customerId: parsed.data.customerId || null,
 
+    // ✅ CRITICAL: camelCase
+    customerName: parsed.data.customerName || null,
+    customerPhone: parsed.data.customerPhone || null,
+
+    note: parsed.data.note,
+    items: parsed.data.items
+  };
+
+  console.log("SALE DATA TO SERVICE:", saleData);
+
+  try {
+    const sale = await salesService.createSale(saleData);
     return reply.send({ ok: true, sale });
   } catch (e) {
     if (e.code === "INSUFFICIENT_SELLER_STOCK") {
@@ -25,6 +41,7 @@ async function createSale(request, reply) {
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
+
 
 async function markSale(request, reply) {
   const parsed = markSaleSchema.safeParse(request.body);

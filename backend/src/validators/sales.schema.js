@@ -2,7 +2,9 @@ const { z } = require("zod");
 
 const createSaleSchema = z.object({
   customerId: z.number().int().positive().optional(),
-  note: z.string().optional(),
+  customerName: z.string().nullable().optional(), // <-- allow null
+  customerPhone: z.string().nullable().optional(), // <-- allow null
+  note: z.string().nullable().optional(),
   items: z.array(
     z.object({
       productId: z.number().int().positive(),
@@ -10,6 +12,7 @@ const createSaleSchema = z.object({
     })
   ).min(1)
 });
+
 
 // ✅ accept "status" not "mark"
 const markSaleSchema = z.object({

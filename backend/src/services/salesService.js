@@ -7,7 +7,7 @@ const { auditLogs } = require("../db/schema/audit_logs.schema");
 const { messages } = require("../db/schema/messages.schema"); // if you already created messages; otherwise remove this line
 const { eq, and } = require("drizzle-orm");
 
-async function createSale({ locationId, sellerId, customerId, note, items }) {
+async function createSale({ locationId, sellerId, customerId, customerName, customerPhone, note, items }) {
   return db.transaction(async (tx) => {
     let total = 0;
     const lines = [];
@@ -47,18 +47,25 @@ async function createSale({ locationId, sellerId, customerId, note, items }) {
       lines.push({ productId: it.productId, qty: it.qty, unitPrice, lineTotal });
     }
 
+    // Insert sale with new snake_case columns
     const [createdSale] = await tx.insert(sales).values({
-      locationId,
-      sellerId,
-      customerId: customerId || null,
-      status: "DRAFT",
-      totalAmount: total,
-      note: note || null,
-      updatedAt: new Date()
-    }).returning();
+  locationId,
+  sellerId,
+  customerId: customerId || null,
+
+  // ✅ MUST use schema property names
+  customerName: customerName || null,
+  customerPhone: customerPhone || null,
+
+  status: "DRAFT",
+  totalAmount: total,
+  note: note || null,
+  updatedAt: new Date()
+}).returning();
+
 
     await tx.insert(saleItems).values(
-      lines.map((l) => ({
+      lines.map(l => ({
         saleId: createdSale.id,
         productId: l.productId,
         qty: l.qty,

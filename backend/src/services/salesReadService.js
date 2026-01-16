@@ -16,8 +16,9 @@ async function getSaleById({ locationId, saleId }) {
       s.canceled_at as "canceledAt",
       s.canceled_by as "canceledBy",
       s.cancel_reason as "cancelReason",
-      c.name as "customerName",
-      c.phone as "customerPhone"
+COALESCE(c.name, s.customer_name) as "customerName",
+COALESCE(c.phone, s.customer_phone) as "customerPhone"
+
     FROM sales s
     LEFT JOIN customers c ON c.id = s.customer_id
     WHERE s.location_id = ${locationId} AND s.id = ${saleId}
@@ -62,17 +63,19 @@ async function listSales({ locationId, filters }) {
   const pattern = q ? `%${q}%` : null;
 
   const res = await db.execute(sql`
-    SELECT
-      s.id,
-      s.status,
-      s.total_amount as "totalAmount",
-      s.created_at as "createdAt",
-      s.seller_id as "sellerId",
-      s.customer_id as "customerId",
-      c.name as "customerName",
-      c.phone as "customerPhone"
-    FROM sales s
-    LEFT JOIN customers c ON c.id = s.customer_id
+  SELECT
+  s.id,
+  s.status,
+  s.total_amount as "totalAmount",
+  s.created_at as "createdAt",
+  s.seller_id as "sellerId",
+  s.customer_id as "customerId",
+  -- ✅ fallback to sale columns if customer table join is empty
+  COALESCE(c.name, s.customer_name) as "customerName",
+  COALESCE(c.phone, s.customer_phone) as "customerPhone"
+FROM sales s
+LEFT JOIN customers c ON c.id = s.customer_id
+
     WHERE s.location_id = ${locationId}
       ${status ? sql`AND s.status = ${status}` : sql``}
       ${sellerId ? sql`AND s.seller_id = ${Number(sellerId)}` : sql``}
