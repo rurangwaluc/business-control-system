@@ -5,8 +5,12 @@ const { ownerSummary } = require("../controllers/dashboardController");
 async function ownerDashboardRoutes(app) {
   app.get(
     "/dashboard/owner/summary",
-    { preHandler: [requirePermission(ACTIONS.DASHBOARD_OWNER_VIEW || ACTIONS.OWNER_ONLY)] },
-    ownerSummary
+    {
+      preHandler: [
+        requirePermission(ACTIONS.DASHBOARD_OWNER_VIEW || ACTIONS.OWNER_ONLY),
+      ],
+    },
+    ownerSummary,
   );
 }
 

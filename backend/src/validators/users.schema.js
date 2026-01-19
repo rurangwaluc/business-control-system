@@ -1,21 +1,29 @@
 const { z } = require("zod");
 
-const allowedRoles = ["admin", "manager", "store_keeper", "seller", "cashier"];
+const allowedRoles = [
+  "owner",
+  "admin",
+  "manager",
+  "store_keeper",
+  "seller",
+  "cashier",
+];
 
 const createUserSchema = z.object({
   name: z.string().min(2),
   email: z.string().email(),
   role: z.enum(allowedRoles),
   password: z.string().min(8),
-  isActive: z.boolean().optional()
+  isActive: z.boolean().optional(),
 });
 
-const updateUserSchema = z.object({
-  role: z.enum(allowedRoles).optional(),
-  isActive: z.boolean().optional()
-}).refine((data) => data.role !== undefined || data.isActive !== undefined, {
-  message: "At least one field (role or isActive) must be provided"
-});
-
+const updateUserSchema = z
+  .object({
+    role: z.enum(allowedRoles).optional(),
+    isActive: z.boolean().optional(),
+  })
+  .refine((data) => data.role !== undefined || data.isActive !== undefined, {
+    message: "At least one field (role or isActive) must be provided",
+  });
 
 module.exports = { createUserSchema, updateUserSchema, allowedRoles };

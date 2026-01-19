@@ -20,16 +20,16 @@ const { cashRoutes } = require("./routes/cash.routes");
 const { creditRoutes } = require("./routes/credit.routes");
 const { salesReadRoutes } = require("./routes/sales.read.routes");
 const { creditReadRoutes } = require("./routes/credit.read.routes");
- 
 
 function buildApp() {
   // const app = fastify({ logger: true, trustProxy: true });
   const app = fastify({ logger: true });
 
-
   app.register(cors, {
     origin: env.CORS_ORIGIN ? env.CORS_ORIGIN.split(",") : true,
-    credentials: true
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   });
 
   app.register(cookie);
@@ -42,9 +42,8 @@ function buildApp() {
   });
 
   app.register(rateLimit, {
-  global: false
-});
-
+    global: false,
+  });
 
   // routes
   app.register(authRoutes);
@@ -64,26 +63,17 @@ function buildApp() {
   app.register(salesReadRoutes);
   app.register(creditReadRoutes);
 
+  app.setErrorHandler((error, request, reply) => {
+    request.log.error(error);
 
+    const statusCode = error.statusCode || 500;
+    const message =
+      statusCode === 429
+        ? "Too Many Requests"
+        : error.message || "Internal Server Error";
 
-
-
-
-
-
-
-app.setErrorHandler((error, request, reply) => {
-  request.log.error(error);
-
-  const statusCode = error.statusCode || 500;
-  const message =
-    statusCode === 429
-      ? "Too Many Requests"
-      : error.message || "Internal Server Error";
-
-  reply.status(statusCode).send({ error: message });
-});
-
+    reply.status(statusCode).send({ error: message });
+  });
 
   return app;
 }
