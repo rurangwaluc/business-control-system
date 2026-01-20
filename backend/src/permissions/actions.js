@@ -24,6 +24,7 @@ module.exports = {
 
   // payments/cash
   PAYMENT_RECORD: "PAYMENT_RECORD",
+  PAYMENT_VIEW: "PAYMENT_VIEW", // ✅ ADD THIS (read-only payments)
   CASH_LEDGER_MANAGE: "CASH_LEDGER_MANAGE",
 
   // dashboard
@@ -48,5 +49,5 @@ module.exports = {
 
   // customers
   CUSTOMER_CREATE: "CUSTOMER_CREATE",
-  CUSTOMER_VIEW: "CUSTOMER_VIEW"
+  CUSTOMER_VIEW: "CUSTOMER_VIEW",
 };

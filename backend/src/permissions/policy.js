@@ -1,4 +1,3 @@
-// backend/permissions/policy.js
 const ROLES = require("./roles");
 const ACTIONS = require("./actions");
 
@@ -6,7 +5,7 @@ const policy = {
   [ROLES.OWNER]: [...Object.values(ACTIONS)],
 
   [ROLES.ADMIN]: [
-    // tenant admin (business admin) — NO OWNER_ONLY
+    // tenant admin — NO OWNER_ONLY
     ACTIONS.USER_MANAGE,
     ACTIONS.DASHBOARD_VIEW,
     ACTIONS.REPORT_VIEW,
@@ -33,6 +32,7 @@ const policy = {
     ACTIONS.CREDIT_SETTLE,
 
     ACTIONS.PAYMENT_RECORD,
+    ACTIONS.PAYMENT_VIEW, // ✅ admin can view payments
     ACTIONS.CASH_LEDGER_MANAGE,
 
     ACTIONS.STOCK_REQUEST_VIEW,
@@ -49,14 +49,19 @@ const policy = {
     ACTIONS.DASHBOARD_VIEW,
     ACTIONS.AUDIT_VIEW,
     ACTIONS.MESSAGE_CREATE,
+
     ACTIONS.PRODUCT_VIEW,
     ACTIONS.INVENTORY_VIEW,
     ACTIONS.HOLDINGS_VIEW,
     ACTIONS.CUSTOMER_VIEW,
+
     ACTIONS.CREDIT_VIEW,
     ACTIONS.CREDIT_READ,
-    ACTIONS.SALE_VIEW,
     ACTIONS.STOCK_REQUEST_VIEW,
+
+    ACTIONS.SALE_VIEW,
+
+    ACTIONS.PAYMENT_VIEW, // ✅ ADD THIS (manager can SEE payments)
   ],
 
   [ROLES.STORE_KEEPER]: [
@@ -64,11 +69,14 @@ const policy = {
     ACTIONS.STOCK_RELEASE_TO_SELLER,
     ACTIONS.STOCK_RETURN_CONFIRM,
     ACTIONS.MESSAGE_CREATE,
+
     ACTIONS.PRODUCT_VIEW,
-    ACTIONS.PRODUCT_CREATE, // ✅ Store keeper can create product
+    ACTIONS.PRODUCT_CREATE,
+
     ACTIONS.INVENTORY_VIEW,
     ACTIONS.INVENTORY_ADJUST,
     ACTIONS.HOLDINGS_VIEW,
+
     ACTIONS.CREDIT_READ,
     ACTIONS.STOCK_REQUEST_VIEW,
   ],
@@ -76,40 +84,43 @@ const policy = {
   [ROLES.SELLER]: [
     ACTIONS.STOCK_REQUEST_CREATE,
     ACTIONS.STOCK_REQUEST_VIEW,
+
     ACTIONS.SALE_CREATE,
     ACTIONS.SALE_MARK_PAID_OR_PENDING,
+    ACTIONS.SALE_VIEW,
+
     ACTIONS.MESSAGE_CREATE,
     ACTIONS.PRODUCT_VIEW,
+
     ACTIONS.CUSTOMER_CREATE,
     ACTIONS.CUSTOMER_VIEW,
+
     ACTIONS.CREDIT_VIEW,
     ACTIONS.CREDIT_READ,
-    ACTIONS.SALE_VIEW,
+
     ACTIONS.INVENTORY_VIEW,
   ],
 
   [ROLES.CASHIER]: [
     ACTIONS.PAYMENT_RECORD,
     ACTIONS.CASH_LEDGER_MANAGE,
+
     ACTIONS.MESSAGE_CREATE,
     ACTIONS.PRODUCT_VIEW,
     ACTIONS.CUSTOMER_VIEW,
+
     ACTIONS.CREDIT_SETTLE,
     ACTIONS.CREDIT_VIEW,
     ACTIONS.CREDIT_READ,
+
     ACTIONS.SALE_VIEW,
+
+    ACTIONS.PAYMENT_VIEW, // ✅ cashier can also view payments list/summary
   ],
 };
 
-function normalizeRole(role) {
-  return String(role || "")
-    .trim()
-    .toLowerCase();
-}
-
 function can(role, action) {
-  const r = normalizeRole(role);
-  const allowed = policy[r] || [];
+  const allowed = policy[role] || [];
   return allowed.includes(action);
 }
 

@@ -20,6 +20,7 @@ const { cashRoutes } = require("./routes/cash.routes");
 const { creditRoutes } = require("./routes/credit.routes");
 const { salesReadRoutes } = require("./routes/sales.read.routes");
 const { creditReadRoutes } = require("./routes/credit.read.routes");
+const { paymentsReadRoutes } = require("./routes/payments.read.routes");
 
 function buildApp() {
   // const app = fastify({ logger: true, trustProxy: true });
@@ -62,6 +63,7 @@ function buildApp() {
   app.register(creditRoutes);
   app.register(salesReadRoutes);
   app.register(creditReadRoutes);
+  app.register(paymentsReadRoutes);
 
   app.setErrorHandler((error, request, reply) => {
     request.log.error(error);
