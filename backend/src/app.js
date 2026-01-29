@@ -1,30 +1,62 @@
+// backend/src/app.js
 const fastify = require("fastify");
 const rateLimit = require("@fastify/rate-limit");
 const cors = require("@fastify/cors");
 const cookie = require("@fastify/cookie");
+const multipart = require("@fastify/multipart");
+const fastifyStatic = require("@fastify/static");
+const path = require("path");
+
 const { env } = require("./config/env");
 const { sessionAuth } = require("./middleware/sessionAuth");
+
+// Routes
 const { authRoutes } = require("./routes/auth.routes");
 const { dashboardRoutes } = require("./routes/dashboard.routes");
-const { inventoryRoutes } = require("./routes/inventory.routes");
-const { requestsRoutes } = require("./routes/requests.routes");
-const { holdingsRoutes } = require("./routes/holdings.routes");
-const { usersRoutes } = require("./routes/users.routes");
-const { salesRoutes } = require("./routes/sales.routes");
-const { paymentsRoutes } = require("./routes/payments.routes");
-const { messagesRoutes } = require("./routes/messages.routes");
 const { ownerDashboardRoutes } = require("./routes/dashboard.owner.routes");
+
+const { usersRoutes } = require("./routes/users.routes");
 const { customersRoutes } = require("./routes/customers.routes");
+const { messagesRoutes } = require("./routes/messages.routes");
 const { auditRoutes } = require("./routes/audit.routes");
-const { cashRoutes } = require("./routes/cash.routes");
-const { creditRoutes } = require("./routes/credit.routes");
+
+const { inventoryRoutes } = require("./routes/inventory.routes");
+const {
+  inventoryArrivalRoutes,
+} = require("./routes/inventory.arrivals.routes");
+const {
+  inventoryAdjustRequestsRoutes,
+} = require("./routes/inventoryAdjustRequests.routes");
+
+const { productPricingRoutes } = require("./routes/productPricing.routes");
+const { holdingsRoutes } = require("./routes/holdings.routes");
+const { requestsRoutes } = require("./routes/requests.routes");
+
+const { salesRoutes } = require("./routes/sales.routes");
 const { salesReadRoutes } = require("./routes/sales.read.routes");
-const { creditReadRoutes } = require("./routes/credit.read.routes");
+const { refundsRoutes } = require("./routes/refunds.routes");
+
+const { paymentsRoutes } = require("./routes/payments.routes");
 const { paymentsReadRoutes } = require("./routes/payments.read.routes");
 
+const { cashRoutes } = require("./routes/cash.routes");
+const { cashSessionsRoutes } = require("./routes/cashSessions.routes");
+const { cashbookRoutes } = require("./routes/cashbook.routes");
+const { expensesRoutes } = require("./routes/expenses.routes");
+const { cashReconcileRoutes } = require("./routes/cashReconcile.routes");
+
+const { creditRoutes } = require("./routes/credit.routes");
+const { creditReadRoutes } = require("./routes/credit.read.routes");
+
+const { reportsRoutes } = require("./routes/reports.routes");
+const { uploadsRoutes } = require("./routes/uploads.routes");
+
 function buildApp() {
-  // const app = fastify({ logger: true, trustProxy: true });
   const app = fastify({ logger: true });
+
+  // --------------------------------------------------
+  // Core plugins
+  // --------------------------------------------------
 
   app.register(cors, {
     origin: env.CORS_ORIGIN ? env.CORS_ORIGIN.split(",") : true,
@@ -35,36 +67,80 @@ function buildApp() {
 
   app.register(cookie);
 
-  // attach user on every request
+  app.register(multipart, {
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  });
+
+  app.register(fastifyStatic, {
+    root: path.join(process.cwd(), "uploads"),
+    prefix: "/uploads/",
+  });
+
+  app.register(rateLimit, { global: false });
+
+  // --------------------------------------------------
+  // Global auth hook
+  // --------------------------------------------------
   app.addHook("preHandler", sessionAuth);
 
-  app.get("/health", async () => {
-    return { status: "ok", timestamp: new Date().toISOString() };
-  });
+  // --------------------------------------------------
+  // Health
+  // --------------------------------------------------
+  app.get("/health", async () => ({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+  }));
 
-  app.register(rateLimit, {
-    global: false,
-  });
+  // --------------------------------------------------
+  // Route registration
+  // --------------------------------------------------
 
-  // routes
+  // Auth / dashboards
   app.register(authRoutes);
   app.register(dashboardRoutes);
-  app.register(inventoryRoutes);
-  app.register(requestsRoutes);
-  app.register(holdingsRoutes);
-  app.register(usersRoutes);
-  app.register(salesRoutes);
-  app.register(paymentsRoutes);
-  app.register(messagesRoutes);
   app.register(ownerDashboardRoutes);
+
+  // Users / messaging / audit
+  app.register(usersRoutes);
   app.register(customersRoutes);
+  app.register(messagesRoutes);
   app.register(auditRoutes);
-  app.register(cashRoutes);
-  app.register(creditRoutes);
+
+  // Inventory
+  app.register(inventoryRoutes);
+  app.register(inventoryArrivalRoutes);
+  app.register(inventoryAdjustRequestsRoutes);
+  app.register(productPricingRoutes);
+  app.register(holdingsRoutes);
+  app.register(requestsRoutes);
+
+  // Sales / payments
+  app.register(salesRoutes);
   app.register(salesReadRoutes);
-  app.register(creditReadRoutes);
+  app.register(refundsRoutes);
+  app.register(paymentsRoutes);
   app.register(paymentsReadRoutes);
 
+  // Cash & cashier features (EXPLICIT PREFIXES ✅)
+  app.register(cashRoutes);
+  app.register(cashSessionsRoutes, { prefix: "/cash-sessions" });
+  app.register(cashbookRoutes, { prefix: "/cashbook" });
+  app.register(expensesRoutes, { prefix: "/cash/expenses" });
+  app.register(cashReconcileRoutes, { prefix: "/" });
+
+  // Credit
+  app.register(creditRoutes);
+  app.register(creditReadRoutes);
+
+  // Reports
+  app.register(reportsRoutes);
+
+  // Uploads
+  app.register(uploadsRoutes);
+
+  // --------------------------------------------------
+  // Global error handler
+  // --------------------------------------------------
   app.setErrorHandler((error, request, reply) => {
     request.log.error(error);
 
@@ -74,7 +150,10 @@ function buildApp() {
         ? "Too Many Requests"
         : error.message || "Internal Server Error";
 
-    reply.status(statusCode).send({ error: message });
+    reply.status(statusCode).send({
+      error: message,
+      debug: error.debug || undefined,
+    });
   });
 
   return app;

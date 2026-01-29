@@ -11,7 +11,7 @@ async function seedStoreKeeper() {
     email: "storekeeper@bcs.local",
     passwordHash,
     role: "store_keeper",
-    isActive: true
+    isActive: true,
   });
 
   console.log("✅ Seeded store keeper: storekeeper@bcs.local / Store@12345");

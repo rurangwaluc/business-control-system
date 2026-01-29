@@ -1,204 +1,470 @@
+// backend/src/services/salesService.js
 const { db } = require("../config/db");
 const { sales } = require("../db/schema/sales.schema");
 const { saleItems } = require("../db/schema/sale_items.schema");
 const { products } = require("../db/schema/products.schema");
 const { sellerHoldings } = require("../db/schema/seller_holdings.schema");
+const { inventoryBalances } = require("../db/schema/inventory.schema");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
-const { messages } = require("../db/schema/messages.schema"); // if you already created messages; otherwise remove this line
-const { eq, and } = require("drizzle-orm");
+const { eq, and, inArray, sql } = require("drizzle-orm");
 
-async function createSale({ locationId, sellerId, customerId, customerName, customerPhone, note, items }) {
+/**
+ * Phase 1 rules (locked):
+ * - Seller creates sale as DRAFT.
+ * - Seller marks PAID/PENDING -> status changes + stock deducted (inventory + seller holdings).
+ * - Cashier records payment -> sale becomes COMPLETED.
+ *
+ * Discounts:
+ * - Seller can discount but NOT above product.maxDiscountPercent.
+ * - Seller cannot increase unit price above product.sellingPrice.
+ * - Sale-level discountPercent must also obey the strictest maxDiscountPercent among items (simple + safe).
+ */
+
+function toInt(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return 0;
+  return Math.round(x);
+}
+
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function toPct(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return 0;
+  return x;
+}
+
+function computeLine({ qty, unitPrice, discountPercent, discountAmount }) {
+  const q = toInt(qty);
+  const up = toInt(unitPrice);
+  const base = up * q;
+
+  const pct = discountPercent == null ? 0 : toPct(discountPercent);
+  const pctSafe = clamp(Number.isFinite(pct) ? pct : 0, 0, 100);
+  const pctDisc = Math.round((base * pctSafe) / 100);
+
+  const amtDisc = toInt(discountAmount);
+
+  const totalDisc = clamp(pctDisc + amtDisc, 0, base);
+  const lineTotal = base - totalDisc;
+
+  return {
+    qty: q,
+    unitPrice: up,
+    base,
+    discountPercent: pctSafe,
+    discountAmount: amtDisc,
+    lineTotal,
+  };
+}
+
+function applySaleDiscount(subtotal, discountPercent, discountAmount) {
+  const sub = toInt(subtotal);
+
+  const pct = discountPercent == null ? 0 : toPct(discountPercent);
+  const pctSafe = clamp(Number.isFinite(pct) ? pct : 0, 0, 100);
+  const pctDisc = Math.round((sub * pctSafe) / 100);
+
+  const amtDisc = toInt(discountAmount);
+
+  const totalDisc = clamp(pctDisc + amtDisc, 0, sub);
+  return {
+    totalAmount: sub - totalDisc,
+    discountPercent: pctSafe,
+    discountAmount: amtDisc,
+  };
+}
+
+async function createSale({
+  locationId,
+  sellerId,
+  customerId,
+  customerName,
+  customerPhone,
+  note,
+  items,
+  discountPercent,
+  discountAmount,
+}) {
   return db.transaction(async (tx) => {
-    let total = 0;
+    const ids = [
+      ...new Set((items || []).map((x) => Number(x.productId)).filter(Boolean)),
+    ];
+    if (ids.length === 0) {
+      const err = new Error("No items");
+      err.code = "NO_ITEMS";
+      throw err;
+    }
+
+    // Load all products at once (location-safe)
+    const prodRows = await tx
+      .select()
+      .from(products)
+      .where(
+        and(eq(products.locationId, locationId), inArray(products.id, ids)),
+      );
+
+    const prodMap = new Map(prodRows.map((p) => [Number(p.id), p]));
+
+    // We enforce sale-level discount <= strictest max among items
+    let strictMaxDisc = 100;
+
+    // Build lines + compute subtotal
     const lines = [];
+    let subtotal = 0;
 
     for (const it of items) {
-      const prodRows = await tx.select().from(products)
-        .where(and(eq(products.id, it.productId), eq(products.locationId, locationId)));
-      const prod = prodRows[0];
-      if (!prod) throw new Error("Product not found");
-
-      await tx.insert(sellerHoldings)
-        .values({ locationId, sellerId, productId: it.productId, qtyOnHand: 0 })
-        .onConflictDoNothing();
-
-      const holdRows = await tx.select().from(sellerHoldings).where(and(
-        eq(sellerHoldings.locationId, locationId),
-        eq(sellerHoldings.sellerId, sellerId),
-        eq(sellerHoldings.productId, it.productId)
-      ));
-      const holding = holdRows[0];
-
-      const newQty = holding.qtyOnHand - it.qty;
-      if (newQty < 0) {
-        const err = new Error("Insufficient seller stock");
-        err.code = "INSUFFICIENT_SELLER_STOCK";
+      const pid = Number(it.productId);
+      const prod = prodMap.get(pid);
+      if (!prod) {
+        const err = new Error("Product not found");
+        err.code = "PRODUCT_NOT_FOUND";
+        err.debug = { productId: pid };
         throw err;
       }
 
-      await tx.update(sellerHoldings)
-        .set({ qtyOnHand: newQty, updatedAt: new Date() })
-        .where(eq(sellerHoldings.id, holding.id));
+      const qty = toInt(it.qty);
+      if (qty <= 0) {
+        const err = new Error("Invalid qty");
+        err.code = "BAD_QTY";
+        throw err;
+      }
 
-      const unitPrice = prod.sellingPrice;
-      const lineTotal = unitPrice * it.qty;
-      total += lineTotal;
+      const sellingPrice = toInt(prod.sellingPrice);
+      const requestedUnit =
+        it.unitPrice == null ? sellingPrice : toInt(it.unitPrice);
 
-      lines.push({ productId: it.productId, qty: it.qty, unitPrice, lineTotal });
+      if (requestedUnit > sellingPrice) {
+        const err = new Error("Unit price cannot be above selling price");
+        err.code = "PRICE_TOO_HIGH";
+        err.debug = { productId: pid, sellingPrice, requestedUnit };
+        throw err;
+      }
+
+      // ✅ Enforce per-item max discount percent
+      const itemMax = clamp(toPct(prod.maxDiscountPercent ?? 0), 0, 100);
+      strictMaxDisc = Math.min(strictMaxDisc, itemMax);
+
+      const itemPct =
+        it.discountPercent == null ? 0 : toPct(it.discountPercent);
+      if (itemPct > itemMax) {
+        const err = new Error("Discount percent exceeds allowed maximum");
+        err.code = "DISCOUNT_TOO_HIGH";
+        err.debug = {
+          productId: pid,
+          requestedDiscountPercent: itemPct,
+          maxDiscountPercent: itemMax,
+        };
+        throw err;
+      }
+
+      const line = computeLine({
+        qty,
+        unitPrice: requestedUnit,
+        discountPercent: itemPct,
+        discountAmount: it.discountAmount,
+      });
+
+      if (line.lineTotal < 0) {
+        const err = new Error("Invalid discount");
+        err.code = "BAD_DISCOUNT";
+        throw err;
+      }
+
+      subtotal += line.lineTotal;
+
+      lines.push({
+        productId: pid,
+        qty: line.qty,
+        unitPrice: line.unitPrice,
+        lineTotal: line.lineTotal,
+      });
     }
 
-    // Insert sale with new snake_case columns
-    const [createdSale] = await tx.insert(sales).values({
-  locationId,
-  sellerId,
-  customerId: customerId || null,
+    // ✅ Enforce sale-level discount percent too (safe + simple)
+    const salePct = discountPercent == null ? 0 : toPct(discountPercent);
+    if (salePct > strictMaxDisc) {
+      const err = new Error("Sale discount percent exceeds allowed maximum");
+      err.code = "SALE_DISCOUNT_TOO_HIGH";
+      err.debug = {
+        requestedDiscountPercent: salePct,
+        strictMaxDiscountPercent: strictMaxDisc,
+      };
+      throw err;
+    }
 
-  // ✅ MUST use schema property names
-  customerName: customerName || null,
-  customerPhone: customerPhone || null,
+    const saleDisc = applySaleDiscount(subtotal, salePct, discountAmount);
 
-  status: "DRAFT",
-  totalAmount: total,
-  note: note || null,
-  updatedAt: new Date()
-}).returning();
+    // 1) Insert sale (DRAFT)
+    const [sale] = await tx
+      .insert(sales)
+      .values({
+        locationId,
+        sellerId,
+        customerId: customerId || null,
+        customerName: customerName ?? null,
+        customerPhone: customerPhone ?? null,
+        status: "DRAFT",
+        totalAmount: saleDisc.totalAmount,
+        note: note ?? null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .returning();
 
+    // 2) Insert sale items with required fields
+    for (const ln of lines) {
+      await tx.insert(saleItems).values({
+        saleId: sale.id,
+        productId: ln.productId,
+        qty: ln.qty,
+        unitPrice: ln.unitPrice,
+        lineTotal: ln.lineTotal,
+      });
+    }
 
-    await tx.insert(saleItems).values(
-      lines.map(l => ({
-        saleId: createdSale.id,
-        productId: l.productId,
-        qty: l.qty,
-        unitPrice: l.unitPrice,
-        lineTotal: l.lineTotal
-      }))
-    );
-
+    // 3) Audit
     await tx.insert(auditLogs).values({
       userId: sellerId,
       action: "SALE_CREATE",
       entity: "sale",
-      entityId: createdSale.id,
-      description: `Seller created sale #${createdSale.id} total=${total}`
+      entityId: sale.id,
+      description: `Sale #${sale.id} created (DRAFT), total=${saleDisc.totalAmount}`,
     });
 
-    return createdSale;
+    return sale;
   });
 }
 
-// ✅ FIXED: accepts status = "PAID" | "PENDING"
 async function markSale({ locationId, sellerId, saleId, status }) {
-  // map external mark to internal status
-  const nextStatus = status === "PAID" ? "AWAITING_PAYMENT_RECORD" : "PENDING";
-
-  const rows = await db.select().from(sales)
-    .where(and(eq(sales.id, saleId), eq(sales.locationId, locationId)));
-
-  const sale = rows[0];
-  if (!sale) {
-    const err = new Error("Sale not found");
-    err.code = "NOT_FOUND";
-    throw err;
-  }
-
-  if (sale.sellerId !== sellerId) {
-    const err = new Error("Forbidden");
-    err.code = "FORBIDDEN";
-    throw err;
-  }
-
-  // ✅ Only allow marking from DRAFT (clean control)
- if (sale.status !== "DRAFT") {
-  const err = new Error("Invalid status");
-  err.code = "BAD_STATUS";
-  err.details = {
-    currentStatus: sale.status,
-    expected: ["DRAFT"],
-    note: "You can only mark a sale once, from DRAFT -> (PENDING or AWAITING_PAYMENT_RECORD)"
-  };
-  throw err;
-}
-
-
-  const [updated] = await db.update(sales)
-    .set({ status: nextStatus, updatedAt: new Date() })
-    .where(eq(sales.id, saleId))
-    .returning();
-
-  await db.insert(auditLogs).values({
-    userId: sellerId,
-    action: "SALE_MARK",
-    entity: "sale",
-    entityId: saleId,
-    description: `Seller marked sale #${saleId} as ${status} -> ${nextStatus}`
-  });
-
-  return updated;
-}
-
-async function cancelSale({ locationId, actorId, saleId, reason }) {
   return db.transaction(async (tx) => {
-    const rows = await tx.select().from(sales)
+    const saleRows = await tx
+      .select()
+      .from(sales)
       .where(and(eq(sales.id, saleId), eq(sales.locationId, locationId)));
-    const sale = rows[0];
 
+    const sale = saleRows[0];
     if (!sale) {
       const err = new Error("Sale not found");
       err.code = "NOT_FOUND";
       throw err;
     }
 
-    if (["CANCELED", "COMPLETED"].includes(sale.status)) {
+    if (Number(sale.sellerId) !== Number(sellerId)) {
+      const err = new Error("Forbidden");
+      err.code = "FORBIDDEN";
+      throw err;
+    }
+
+    if (sale.status !== "DRAFT") {
       const err = new Error("Invalid status");
+      err.code = "BAD_STATUS";
+      err.debug = { current: sale.status };
+      throw err;
+    }
+
+    const items = await tx
+      .select()
+      .from(saleItems)
+      .where(eq(saleItems.saleId, saleId));
+
+    if (!items.length) {
+      const err = new Error("Sale has no items");
+      err.code = "NO_ITEMS";
+      throw err;
+    }
+
+    for (const it of items) {
+      const pid = Number(it.productId);
+      const qty = toInt(it.qty);
+
+      await tx
+        .insert(sellerHoldings)
+        .values({ locationId, sellerId, productId: pid, qtyOnHand: 0 })
+        .onConflictDoNothing();
+
+      const holdRows = await tx
+        .select()
+        .from(sellerHoldings)
+        .where(
+          and(
+            eq(sellerHoldings.locationId, locationId),
+            eq(sellerHoldings.sellerId, sellerId),
+            eq(sellerHoldings.productId, pid),
+          ),
+        );
+
+      const holding = holdRows[0];
+      const newHoldQty = toInt(holding?.qtyOnHand) - qty;
+      if (newHoldQty < 0) {
+        const err = new Error("Insufficient seller stock");
+        err.code = "INSUFFICIENT_SELLER_STOCK";
+        err.debug = {
+          productId: pid,
+          holding: holding?.qtyOnHand,
+          needed: qty,
+        };
+        throw err;
+      }
+
+      await tx
+        .insert(inventoryBalances)
+        .values({ locationId, productId: pid, qtyOnHand: 0 })
+        .onConflictDoNothing();
+
+      const invRows = await tx
+        .select()
+        .from(inventoryBalances)
+        .where(
+          and(
+            eq(inventoryBalances.locationId, locationId),
+            eq(inventoryBalances.productId, pid),
+          ),
+        );
+
+      const inv = invRows[0];
+      const newInvQty = toInt(inv?.qtyOnHand) - qty;
+      if (newInvQty < 0) {
+        const err = new Error("Insufficient inventory stock");
+        err.code = "INSUFFICIENT_INVENTORY_STOCK";
+        err.debug = { productId: pid, inventory: inv?.qtyOnHand, needed: qty };
+        throw err;
+      }
+
+      await tx
+        .update(sellerHoldings)
+        .set({ qtyOnHand: newHoldQty, updatedAt: new Date() })
+        .where(
+          and(
+            eq(sellerHoldings.locationId, locationId),
+            eq(sellerHoldings.sellerId, sellerId),
+            eq(sellerHoldings.productId, pid),
+          ),
+        );
+
+      await tx
+        .update(inventoryBalances)
+        .set({ qtyOnHand: newInvQty, updatedAt: new Date() })
+        .where(
+          and(
+            eq(inventoryBalances.locationId, locationId),
+            eq(inventoryBalances.productId, pid),
+          ),
+        );
+    }
+
+    const nextStatus =
+      String(status).toUpperCase() === "PAID"
+        ? "AWAITING_PAYMENT_RECORD"
+        : "PENDING";
+
+    const [updated] = await tx
+      .update(sales)
+      .set({ status: nextStatus, updatedAt: new Date() })
+      .where(eq(sales.id, saleId))
+      .returning();
+
+    await tx.insert(auditLogs).values({
+      userId: sellerId,
+      action: "SALE_MARK",
+      entity: "sale",
+      entityId: saleId,
+      description: `Sale #${saleId} marked ${status} -> ${nextStatus} (stock deducted)`,
+    });
+
+    return updated;
+  });
+}
+
+async function cancelSale({ locationId, userId, saleId, reason }) {
+  return db.transaction(async (tx) => {
+    const saleRows = await tx
+      .select()
+      .from(sales)
+      .where(and(eq(sales.id, saleId), eq(sales.locationId, locationId)));
+
+    const sale = saleRows[0];
+    if (!sale) {
+      const err = new Error("Sale not found");
+      err.code = "NOT_FOUND";
+      throw err;
+    }
+
+    if (sale.status === "COMPLETED") {
+      const err = new Error("Cannot cancel completed sale");
       err.code = "BAD_STATUS";
       throw err;
     }
 
-    const lines = await tx.select().from(saleItems).where(eq(saleItems.saleId, saleId));
+    const needsRestore = ["PENDING", "AWAITING_PAYMENT_RECORD"].includes(
+      String(sale.status),
+    );
 
-    for (const line of lines) {
-      await tx.insert(sellerHoldings)
-        .values({ locationId, sellerId: sale.sellerId, productId: line.productId, qtyOnHand: 0 })
-        .onConflictDoNothing();
+    if (needsRestore) {
+      const items = await tx
+        .select()
+        .from(saleItems)
+        .where(eq(saleItems.saleId, saleId));
 
-      const holdRows = await tx.select().from(sellerHoldings).where(and(
-        eq(sellerHoldings.locationId, locationId),
-        eq(sellerHoldings.sellerId, sale.sellerId),
-        eq(sellerHoldings.productId, line.productId)
-      ));
+      for (const it of items) {
+        const pid = Number(it.productId);
+        const qty = toInt(it.qty);
 
-      const holding = holdRows[0];
-      await tx.update(sellerHoldings)
-        .set({ qtyOnHand: holding.qtyOnHand + line.qty, updatedAt: new Date() })
-        .where(eq(sellerHoldings.id, holding.id));
+        await tx
+          .insert(inventoryBalances)
+          .values({ locationId, productId: pid, qtyOnHand: 0 })
+          .onConflictDoNothing();
+
+        await tx.execute(sql`
+          UPDATE inventory_balances
+          SET qty_on_hand = qty_on_hand + ${qty},
+              updated_at = now()
+          WHERE location_id = ${locationId}
+            AND product_id = ${pid}
+        `);
+
+        await tx
+          .insert(sellerHoldings)
+          .values({
+            locationId,
+            sellerId: sale.sellerId,
+            productId: pid,
+            qtyOnHand: 0,
+          })
+          .onConflictDoNothing();
+
+        await tx.execute(sql`
+          UPDATE seller_holdings
+          SET qty_on_hand = qty_on_hand + ${qty},
+              updated_at = now()
+          WHERE location_id = ${locationId}
+            AND seller_id = ${sale.sellerId}
+            AND product_id = ${pid}
+        `);
+      }
     }
 
-    const [updated] = await tx.update(sales).set({
-      status: "CANCELED",
-      canceledAt: new Date(),
-      canceledBy: actorId,
-      cancelReason: reason,
-      updatedAt: new Date()
-    }).where(eq(sales.id, saleId)).returning();
+    const [updated] = await tx
+      .update(sales)
+      .set({
+        status: "CANCELLED",
+        canceledAt: new Date(),
+        canceledBy: userId,
+        cancelReason: reason || null,
+        updatedAt: new Date(),
+      })
+      .where(eq(sales.id, saleId))
+      .returning();
 
     await tx.insert(auditLogs).values({
-      userId: actorId,
+      userId,
       action: "SALE_CANCEL",
       entity: "sale",
       entityId: saleId,
-      description: `Sale #${saleId} canceled. Reason: ${reason}`
+      description: `Sale #${saleId} cancelled. reason=${reason || "-"}`,
     });
-
-    // Optional system message if you already have messages module/table:
-    // await tx.insert(messages).values({
-    //   locationId,
-    //   entityType: "sale",
-    //   entityId: saleId,
-    //   userId: actorId,
-    //   role: "system",
-    //   message: `Sale canceled. Reason: ${reason}`,
-    //   isSystem: 1
-    // });
 
     return updated;
   });
